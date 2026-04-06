@@ -40,8 +40,11 @@ recall ingest ~/documents/
 # With Claude Opus (higher quality, uses your CLI subscription)
 recall --use-claude-cli ingest ~/documents/
 
-# Parallel ingestion (4 concurrent LLM calls)
+# Parallel batch extraction within each file (4 concurrent LLM calls)
 recall --use-claude-cli ingest ~/documents/ -j 4
+
+# Process smallest files first (checkpoint quickly)
+recall --use-claude-cli ingest ~/documents/ -j 4 --smallest-first
 
 # Skip certain directories
 recall --use-claude-cli ingest ~/documents/ --exclude standups --exclude drafts
