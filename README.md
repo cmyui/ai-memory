@@ -112,6 +112,53 @@ recall serve              # Start web UI on localhost:8765
 | `parsers.py` | Email body extraction helper |
 | `web/app.py` | FastAPI web UI for browsing/editing memories |
 
+## Design details
+
+### LLM backends
+
+| Backend | Flag | Model | Batch size | Notes |
+|---|---|---|---|---|
+| OpenAI API | (default) | GPT-4.1-nano | 100K chars | Requires `OPENAI_API_KEY` |
+| Claude CLI | `--use-claude-cli` | Opus 4.6 | 500K chars | Uses your CLI subscription, `--effort max` |
+
+The Claude CLI backend produces significantly higher quality extractions — better date accuracy, fewer duplicates, atomic self-contained facts, and preserved perspectives from all conversation participants.
+
+### Source types
+
+Every memory is tagged with a `source_type` indicating its provenance:
+
+| Type | Origin | Trust level |
+|---|---|---|
+| `ingest` | File ingestion via `recall ingest` | High — primary source data |
+| `remember:human` | `recall remember --human "..."` | High — deliberate human input |
+| `remember:ai` | `recall remember "..."` (default) | Medium — AI interpretation |
+| `dream` | Dream cycle peer card generation | Low — derived/synthesized |
+
+The dream cycle excludes `source_type='dream'` from its input to prevent hallucination feedback loops.
+
+### Fact dates
+
+Facts are prefixed with dates during extraction. The `fact_date` column parses these into structured metadata for temporal queries. Supported formats:
+
+- `[2024-01-15]` — specific day
+- `[2024-01]` — month
+- `[2024]` — year
+- `[2024-Q2]` — quarter
+- `[2025-H2]` — half-year
+- `[2024-01 to 2024-03]` — date range
+- `[2023-11-11 to 2023-11-13]` — day range
+
+Facts without parseable dates (e.g. `[Undated]`, category-only tags) get `fact_date=NULL`.
+
+### Ingestion behavior
+
+- Files are hashed and tracked in `ingest_log` — unchanged files are skipped on re-runs
+- Files that produce zero facts are also recorded, avoiding redundant LLM calls on retry
+- Large files are split into pages at line boundaries, respecting the backend's batch size limit
+- With `-j N`, batches within each file are extracted in parallel (N concurrent LLM calls), while files are processed sequentially for reliable checkpointing
+- `--smallest-first` processes files in ascending size order, maximizing early checkpoints when token budgets are limited
+- SQLite WAL mode is enabled for safe concurrent access across processes
+
 ## Schema
 
 ```sql
@@ -124,7 +171,14 @@ chunks (
     embedding BLOB,         -- float32 vector (384 dims)
     created_at REAL,        -- ingestion timestamp
     source_type TEXT,       -- 'ingest', 'remember:human', 'remember:ai', 'dream'
-    fact_date TEXT          -- extracted from [YYYY-MM-DD] prefix, nullable
+    fact_date TEXT          -- structured date, nullable (see formats above)
+)
+
+ingest_log (
+    source_file TEXT PRIMARY KEY,  -- relative path from ingest directory
+    file_hash TEXT,                -- SHA256 of file content (skip if unchanged)
+    ingested_at REAL,              -- timestamp
+    chunk_count INTEGER            -- 0 for files with no extractable facts
 )
 ```
 
