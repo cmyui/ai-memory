@@ -253,6 +253,33 @@ async def bm25_search(
         return []
 
 
+async def bm25_search_scored(
+    db: databases.Database,
+    query: str,
+    *,
+    top_k: int = 20,
+) -> dict[int, float]:
+    """Return chunk IDs with BM25 scores (higher = more relevant)."""
+    fts_query = _sanitize_fts_query(query)
+    if not fts_query:
+        return {}
+
+    try:
+        rows = await db.fetch_all(
+            query="""\
+                SELECT rowid as id, rank as bm25_rank FROM chunks_fts
+                WHERE chunks_fts MATCH :query
+                ORDER BY rank
+                LIMIT :top_k
+            """,
+            values={"query": fts_query, "top_k": top_k},
+        )
+        # FTS5 rank is negative (lower = better). Negate so higher = better.
+        return {row._mapping["id"]: -row._mapping["bm25_rank"] for row in rows}
+    except Exception:
+        return {}
+
+
 async def get_file_hash(db: databases.Database, source_file: str) -> str | None:
     row = await db.fetch_one(
         query="SELECT file_hash FROM ingest_log WHERE source_file = :source_file",

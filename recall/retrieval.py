@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import databases
 import numpy as np
+from sentence_transformers import CrossEncoder
 
 from recall import embeddings
 from recall import store
@@ -12,6 +13,17 @@ RRF_K = 60
 
 # Minimum cosine similarity for the top result to be considered relevant
 MIN_CONFIDENCE = 0.60
+
+# Cross-encoder reranker — 22M params, runs locally in ~60ms for 15 candidates
+RERANK_POOL_SIZE = 15
+_reranker: CrossEncoder | None = None
+
+
+def _get_reranker() -> CrossEncoder:
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
+    return _reranker
 
 
 @dataclass
@@ -71,7 +83,20 @@ async def query(
             score += 1.0 / (RRF_K + bm25_ranking[chunk_id])
         rrf_scores[chunk_id] = score
 
-    sorted_ids = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)[:top_k]
+    # Take top candidates from RRF for cross-encoder reranking
+    rerank_ids = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)[:RERANK_POOL_SIZE]
+
+    # Cross-encoder reranking: score (query, document) pairs jointly
+    reranker = _get_reranker()
+    pairs = [(query_text, chunk_by_id[cid].content) for cid in rerank_ids if cid in chunk_by_id]
+    rerank_scores = reranker.predict(pairs)
+
+    reranked = sorted(
+        zip(rerank_ids, rerank_scores),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    sorted_ids = [cid for cid, _ in reranked[:top_k]]
 
     results = [
         Result(
@@ -79,7 +104,7 @@ async def query(
             content=chunk_by_id[cid].content,
             source_file=chunk_by_id[cid].source_file,
             section_path=chunk_by_id[cid].section_path,
-            score=rrf_scores[cid],
+            score=rrf_scores.get(cid, 0.0),
             cosine_sim=cosine_by_id.get(cid, 0.0),
             created_at=chunk_by_id[cid].created_at,
             source_type=chunk_by_id[cid].source_type,
