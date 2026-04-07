@@ -14,15 +14,27 @@ RRF_K = 60
 # Minimum cosine similarity for the top result to be considered relevant
 MIN_CONFIDENCE = 0.60
 
-# Cross-encoder reranker — 22M params, runs locally in ~60ms for 15 candidates
+# Cross-encoder reranker
 RERANK_POOL_SIZE = 15
+RERANKER_MODEL = "jinaai/jina-reranker-v2-base-multilingual"
 _reranker: CrossEncoder | None = None
+_reranker_model_name: str | None = None
+
+
+def set_reranker_model(model_name: str) -> None:
+    global _reranker, _reranker_model_name
+    _reranker = None  # Force reload
+    _reranker_model_name = model_name
 
 
 def _get_reranker() -> CrossEncoder:
     global _reranker
     if _reranker is None:
-        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
+        model = _reranker_model_name or RERANKER_MODEL
+        kwargs: dict = {"max_length": 512}
+        if "jina" in model:
+            kwargs["trust_remote_code"] = True
+        _reranker = CrossEncoder(model, **kwargs)
     return _reranker
 
 
